@@ -15,6 +15,13 @@
 #include <cuchar>
 #include <charconv>
 
+#if defined(__ANDROID__)
+#include <android/log.h>
+#define RECOMP_ANDROID_LOG(...) __android_log_print(ANDROID_LOG_INFO, "RecompRuntime", __VA_ARGS__)
+#else
+#define RECOMP_ANDROID_LOG(...)
+#endif
+
 #include "recomp.h"
 #include "librecomp/overlays.hpp"
 #include "librecomp/game.hpp"
@@ -730,8 +737,10 @@ bool recomp::flashram_allowed() {
 }
 
 void recomp::start(const recomp::Configuration& cfg) {
+    RECOMP_ANDROID_LOG("start entered");
     project_version = cfg.project_version;
     recomp::check_all_stored_roms();
+    RECOMP_ANDROID_LOG("stored ROM check complete");
 
     recomp::rsp::set_callbacks(cfg.rsp_callbacks);
 
@@ -747,13 +756,17 @@ void recomp::start(const recomp::Configuration& cfg) {
     ultramodern::gfx_callbacks_t::gfx_data_t gfx_data{};
 
     if (gfx_callbacks.create_gfx) {
+        RECOMP_ANDROID_LOG("calling create_gfx");
         gfx_data = gfx_callbacks.create_gfx();
+        RECOMP_ANDROID_LOG("create_gfx returned %p", gfx_data);
     }
 
     auto window_handle = cfg.window_handle;
     if (window_handle == ultramodern::renderer::WindowHandle{}) {
         if (gfx_callbacks.create_window) {
+            RECOMP_ANDROID_LOG("calling create_window");
             window_handle = gfx_callbacks.create_window(gfx_data);
+            RECOMP_ANDROID_LOG("create_window returned");
         }
         else {
             assert(false && "No create_window callback provided");
@@ -763,7 +776,9 @@ void recomp::start(const recomp::Configuration& cfg) {
     ultramodern::set_message_queue_control(cfg.message_queue_control);
 
     recomp::mods::initialize_mods();
+    RECOMP_ANDROID_LOG("mods initialized");
     recomp::mods::scan_mods();
+    RECOMP_ANDROID_LOG("mods scanned");
 
     // Allocate rdram without comitting it. Use a platform-specific virtual allocation function
     // that initializes to zero. Protect the region above the memory size to catch accesses to invalid addresses.
@@ -802,20 +817,34 @@ void recomp::start(const recomp::Configuration& cfg) {
     recomp::mods::register_hook_exports();
 
     std::thread game_thread{[](ultramodern::renderer::WindowHandle window_handle, uint8_t* rdram) {
+        RECOMP_ANDROID_LOG("game thread started");
         debug_printf("[Recomp] Starting\n");
 
         ultramodern::set_native_thread_name("Game Start Thread");
 
         ultramodern::preinit(rdram, window_handle);
+        RECOMP_ANDROID_LOG("preinit complete");
 
         recomp_context context{};
 
         // Loop until the game starts.
-        while (!wait_for_game_started(rdram, &context)) {}
+        uint32_t wait_count = 0;
+        while (!wait_for_game_started(rdram, &context)) {
+            RECOMP_ANDROID_LOG("wait_for_game_started returned false count=%u", ++wait_count);
+        }
+        RECOMP_ANDROID_LOG("wait_for_game_started returned true");
     }, window_handle, rdram};
 
+    uint32_t loop_count = 0;
     while (!exited) {
+#if defined(__ANDROID__)
+        ultramodern::sleep_milliseconds(16);
+#else
         ultramodern::sleep_milliseconds(1);
+#endif
+        if ((loop_count++ % 600) == 0) {
+            RECOMP_ANDROID_LOG("main event loop count=%u", loop_count);
+        }
         if (gfx_callbacks.update_gfx != nullptr) {
             gfx_callbacks.update_gfx(gfx_data);
         }
