@@ -350,11 +350,7 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
     while (!exited) {
         // Try to pull an action from the queue
         Action action;
-#if defined(__ANDROID__)
-        constexpr auto action_wait_timeout = 16ms;
-#else
         constexpr auto action_wait_timeout = 1ms;
-#endif
         if (events_context.action_queue.wait_dequeue_timed(action, action_wait_timeout)) {
             // Determine the action type and act on it
             if (const auto* task_action = std::get_if<SpTaskAction>(&action)) {
