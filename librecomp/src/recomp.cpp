@@ -693,13 +693,19 @@ bool wait_for_game_started(uint8_t* rdram, recomp_context* context) {
                 }
 
                 recomp::init_heap(rdram, recomp::mod_rdram_start + mod_ram_used);
+                printf("[Recomp] Heap initialized, mod RAM used 0x%08X\n", mod_ram_used);
 
                 save_type = game_entry.save_type;
+                printf("[Recomp] Initializing saving\n");
                 ultramodern::init_saving(rdram);
+                printf("[Recomp] Saving initialized\n");
 
                 try {
+                    printf("[Recomp] Entering game entrypoint\n");
                     game_entry.entrypoint(rdram, context);
+                    printf("[Recomp] Game entrypoint returned\n");
                 } catch (ultramodern::thread_terminated& terminated) {
+                    printf("[Recomp] Game thread terminated\n");
 
                 }
             }
