@@ -2,6 +2,7 @@
 #include <thread>
 #include <cassert>
 #include <string>
+#include <inttypes.h>
 
 #include "ultramodern/ultra64.h"
 #include "ultramodern/ultramodern.hpp"
@@ -188,15 +189,21 @@ void ultramodern::resume_thread_and_wait(RDRAM_ARG OSThread *t) {
 
 static void _thread_func(RDRAM_ARG PTR(OSThread) self_, PTR(thread_func_t) entrypoint, PTR(void) arg, UltraThreadContext* thread_context) {
     OSThread *self = TO_PTR(OSThread, self_);
+    printf("[ThreadDiag] host thread entered osthread=%" PRIx32 " self=%p id=%d entry=%" PRIx32 " arg=%" PRIx32
+           " sp=%" PRIx32 " context=%p\n",
+           self_, self, self->id, entrypoint, arg, self->sp, thread_context);
     debug_printf("[Thread] Thread created: %d\n", self->id);
     thread_self = self_;
     is_game_thread = true;
 
     // Set the thread name
-    ultramodern::set_native_thread_name(ultramodern::threads::get_game_thread_name(self));
+    std::string thread_name = ultramodern::threads::get_game_thread_name(self);
+    printf("[ThreadDiag] set native name id=%d name=%s\n", self->id, thread_name.c_str());
+    ultramodern::set_native_thread_name(thread_name);
     ultramodern::set_native_thread_priority(ultramodern::ThreadPriority::High);
 
     // Signal the initialized semaphore to indicate that this thread can be started.
+    printf("[ThreadDiag] signal initialized id=%d context=%p\n", self->id, thread_context);
     thread_context->initialized.signal();
 
     debug_printf("[Thread] Thread waiting to be started: %d\n", self->id);
@@ -205,34 +212,46 @@ static void _thread_func(RDRAM_ARG PTR(OSThread) self_, PTR(thread_func_t) entry
     try {
         wait_for_resumed(PASS_RDRAM thread_context);
     } catch (ultramodern::thread_terminated& terminated) {
+        printf("[ThreadDiag] wait terminated id=%d context=%p\n", self->id, thread_context);
     }
 
     // Make sure the thread wasn't replaced or destroyed before it was started.
     if (self->context == thread_context) {
+        printf("[ThreadDiag] run begin id=%d entry=%" PRIx32 " sp=%" PRIx32 " arg=%" PRIx32 "\n", self->id, entrypoint,
+               self->sp, arg);
         debug_printf("[Thread] Thread started: %d\n", self->id);
         try {
             // Run the thread's function with the provided argument.
             run_thread_function(PASS_RDRAM entrypoint, self->sp, arg);
+            printf("[ThreadDiag] run returned id=%d\n", self->id);
         } catch (ultramodern::thread_terminated& terminated) {
+            printf("[ThreadDiag] run terminated id=%d\n", self->id);
         }
     }
     else {
+        printf("[ThreadDiag] destroyed before start id=%d self_context=%p expected=%p\n", self->id, self->context,
+               thread_context);
         debug_printf("[Thread] Thread destroyed before being started: %d\n", self->id);
     }
 
     // Check if the thread hasn't been destroyed or replaced. If so, then the thread terminated or destroyed itself,
     // so mark this thread as destroyed and run the next queued thread.
     if (self->context == thread_context) {
+        printf("[ThreadDiag] self cleanup id=%d context=%p\n", self->id, thread_context);
         self->context = nullptr;
         run_next_thread(PASS_RDRAM1);
     }
 
     // Dispose of this thread now that it's completed or terminated.
+    printf("[ThreadDiag] enqueue cleanup id=%d context=%p\n", self->id, thread_context);
     ultramodern::cleanup_thread(thread_context);
 }
 
 extern "C" void osStartThread(RDRAM_ARG PTR(OSThread) t_) {
     OSThread* t = TO_PTR(OSThread, t_);
+    printf("[ThreadDiag] osStartThread t=%" PRIx32 " ptr=%p id=%d state=%d context=%p sp=%" PRIx32
+           " thread_self=%" PRIx32 "\n",
+           t_, t, t->id, (int)t->state, t->context, t->sp, thread_self);
     debug_printf("[os] Start Thread %d\n", t->id);
 
     // If this is a game thread, insert the new thread into the running queue and then check the running queue.
@@ -243,12 +262,16 @@ extern "C" void osStartThread(RDRAM_ARG PTR(OSThread) t_) {
     // Otherwise, immediately start the thread and terminate this one.
     else {
         t->state = OSThreadState::QUEUED;
+        printf("[ThreadDiag] osStartThread immediate resume id=%d\n", t->id);
         resume_thread(t);
         //throw ultramodern::thread_terminated{};
     }
 }
 
 extern "C" void osCreateThread(RDRAM_ARG PTR(OSThread) t_, OSId id, PTR(thread_func_t) entrypoint, PTR(void) arg, PTR(void) sp, OSPri pri) {
+    printf("[ThreadDiag] osCreateThread begin t=%" PRIx32 " id=%d entry=%" PRIx32 " arg=%" PRIx32
+           " sp=%" PRIx32 " pri=%d thread_self=%" PRIx32 "\n",
+           t_, id, entrypoint, arg, sp, pri, thread_self);
     debug_printf("[os] Create Thread %d\n", id);
     OSThread *t = TO_PTR(OSThread, t_);
     
@@ -258,15 +281,19 @@ extern "C" void osCreateThread(RDRAM_ARG PTR(OSThread) t_, OSId id, PTR(thread_f
     t->id = id;
     t->state = OSThreadState::STOPPED;
     t->sp = sp - 0x10; // Set up the first stack frame
+    printf("[ThreadDiag] osCreateThread fields tptr=%p adjusted_sp=%" PRIx32 "\n", t, t->sp);
 
     // Spawn a new thread, which will immediately pause itself and wait until it's been started.
     // Pass the context as an argument to the thread function to ensure that it can't get cleared before the thread captures its value.
     UltraThreadContext* context = new UltraThreadContext{};
     t->context = context;
+    printf("[ThreadDiag] osCreateThread context=%p before host spawn\n", context);
     context->host_thread = std::thread{_thread_func, PASS_RDRAM t_, entrypoint, arg, t->context};
 
     // Wait until the thread is initialized to indicate that it's ready to be started.
+    printf("[ThreadDiag] osCreateThread waiting initialized id=%d context=%p\n", t->id, context);
     context->initialized.wait();
+    printf("[ThreadDiag] osCreateThread initialized id=%d context=%p\n", t->id, context);
     debug_printf("[os] Thread %d is ready to be started\n", t->id);
 }
 
