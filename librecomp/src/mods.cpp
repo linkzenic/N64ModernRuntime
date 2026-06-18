@@ -205,6 +205,11 @@ static std::filesystem::path prepare_android_native_library_path(const std::file
     chmod(destination_path.c_str(), 0700);
     return destination_path;
 }
+
+static bool android_safe_mode_enabled() {
+    const char* safe_mode = std::getenv("APP_SAFE_MODE");
+    return safe_mode != nullptr && safe_mode[0] == '1';
+}
 #  endif
 
 class recomp::mods::DynamicLibrary {
@@ -865,6 +870,13 @@ std::vector<recomp::mods::ModOpenErrorDetails> recomp::mods::ModContext::scan_mo
     close_mods();
 
     static const std::vector<ModContentTypeId> empty_content_types{};
+#if defined(__ANDROID__)
+    if (android_safe_mode_enabled()) {
+        printf("Android safe mode: skipping external mods\n");
+    }
+    else
+#endif
+    {
     for (const auto& mod_path : std::filesystem::directory_iterator{mod_folder, std::filesystem::directory_options::skip_permission_denied, ec}) {
         bool is_mod = false;
         bool requires_manifest = true;
@@ -892,6 +904,7 @@ std::vector<recomp::mods::ModOpenErrorDetails> recomp::mods::ModContext::scan_mo
         else {
             printf("Skipping non-mod " PATHFMT PATHFMT "\n", mod_path.path().stem().c_str(), mod_path.path().extension().c_str());
         }
+    }
     }
 
     for (const auto &mod_bytes : embedded_mod_bytes) {
@@ -1654,6 +1667,11 @@ std::vector<recomp::mods::ModLoadErrorDetails> recomp::mods::ModContext::load_mo
     // Find and load active mods.
     for (size_t mod_index = 0; mod_index < opened_mods.size(); mod_index++) {
         auto& mod = opened_mods[mod_index];
+#if defined(__ANDROID__)
+        if (android_safe_mode_enabled() && !embedded_mod_bytes.contains(mod.manifest.mod_id)) {
+            continue;
+        }
+#endif
         if (mod.is_for_game(mod_game_index) && (enabled_mods.contains(mod.manifest.mod_id) || auto_enabled_mods.contains(mod.manifest.mod_id))) {
             active_mods.push_back(mod_index);
             loaded_mods_by_id.emplace(mod.manifest.mod_id, mod_index);
