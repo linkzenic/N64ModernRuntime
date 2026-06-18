@@ -848,14 +848,24 @@ void recomp::start(const recomp::Configuration& cfg) {
 #else
         ultramodern::sleep_milliseconds(1);
 #endif
+        if (loop_count < 10) {
+            printf("[Recomp] Main loop iteration %u\n", loop_count);
+        }
         if ((loop_count++ % 600) == 0) {
             RECOMP_ANDROID_LOG("main event loop count=%u", loop_count);
         }
         if (gfx_callbacks.update_gfx != nullptr) {
+            if (loop_count <= 10) {
+                printf("[Recomp] Calling update_gfx iteration %u\n", loop_count - 1);
+            }
             gfx_callbacks.update_gfx(gfx_data);
+            if (loop_count <= 10) {
+                printf("[Recomp] update_gfx returned iteration %u\n", loop_count - 1);
+            }
         }
     }
 
+    printf("[Recomp] Main loop exited\n");
     graphics_shutdown_ready.signal();
 
     game_thread.join();
