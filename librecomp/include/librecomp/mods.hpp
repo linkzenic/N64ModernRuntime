@@ -283,8 +283,14 @@ namespace recomp {
         void set_mod_index(const std::string &mod_game_id, const std::string &mod_id, size_t index);
 
         // Internal functions, TODO move to an internal header.
+#if defined(__aarch64__) || defined(_M_ARM64)
+        static constexpr size_t PatchBytes = 24;
+#else
+        static constexpr size_t PatchBytes = 16;
+#endif
+
         struct PatchData {
-            std::array<std::byte, 16> replaced_bytes;
+            std::array<std::byte, PatchBytes> replaced_bytes;
             std::string mod_id;
         };
 

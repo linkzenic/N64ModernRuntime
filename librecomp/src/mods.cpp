@@ -2,6 +2,8 @@
 #include <fstream>
 #include <sstream>
 #include <functional>
+#include <cerrno>
+#include <cstring>
 
 #include "librecomp/files.hpp"
 #include "librecomp/mods.hpp"
@@ -78,6 +80,14 @@ bool get_to_vec(const nlohmann::json& val, std::vector<T2>& out) {
 #   error "Unsupported architecture!"
 #endif
 
+static void flush_code_cache(uint8_t* start, size_t size) {
+#if defined(__GNUC__) || defined(__clang__)
+    __builtin___clear_cache(reinterpret_cast<char*>(start), reinterpret_cast<char*>(start + size));
+#else
+    (void)start;
+    (void)size;
+#endif
+}
 
 #if defined(_WIN32)
 #define PATHFMT "%ls"
@@ -147,25 +157,25 @@ private:
     uint32_t api_version;
 };
 
-static constexpr size_t PatchSize = 16;
+static constexpr size_t PatchSize = recomp::mods::PatchBytes;
 
-void unprotect(void* target_func, uint64_t* old_flags) {
+bool unprotect(void* target_func, uint64_t* old_flags) {
     DWORD old_flags_dword;
     BOOL result = VirtualProtect(target_func,
         PatchSize,
         PAGE_READWRITE,
         &old_flags_dword);
     *old_flags = old_flags_dword;
-    (void)result;
+    return result != 0;
 }
 
-void protect(void* target_func, uint64_t old_flags) {
+bool protect(void* target_func, uint64_t old_flags) {
     DWORD dummy_old_flags;
     BOOL result = VirtualProtect(target_func,
         PatchSize,
         static_cast<DWORD>(old_flags),
         &dummy_old_flags);
-    (void)result;
+    return result != 0;
 }
 #else
 #  include <unistd.h>
@@ -278,9 +288,9 @@ private:
     uint32_t api_version;
 };
 
-static constexpr size_t PatchSize = 16;
+static constexpr size_t PatchSize = recomp::mods::PatchBytes;
 
-void unprotect(void* target_func, uint64_t* old_flags) {
+bool unprotect(void* target_func, uint64_t* old_flags) {
     // Align the address to a page boundary.
     uintptr_t page_start = (uintptr_t)target_func;
     int page_size = getpagesize();
@@ -290,10 +300,15 @@ void unprotect(void* target_func, uint64_t* old_flags) {
 
     int result = mprotect((void*)page_start, page_end - page_start, PROT_READ | PROT_WRITE);
     *old_flags = 0;
-    (void)result;
+    if (result != 0) {
+        printf("Code patch mprotect RW failed target=%p page=%p size=%zu errno=%d (%s)\n",
+            target_func, (void*)page_start, page_end - page_start, errno, strerror(errno));
+        return false;
+    }
+    return true;
 }
 
-void protect(void* target_func, uint64_t old_flags) {
+bool protect(void* target_func, uint64_t old_flags) {
     // Align the address to a page boundary.
     uintptr_t page_start = (uintptr_t)target_func;
     int page_size = getpagesize();
@@ -302,7 +317,12 @@ void protect(void* target_func, uint64_t old_flags) {
     page_end = (page_end / page_size + 1) * page_size;
 
     int result = mprotect((void*)page_start, page_end - page_start, PROT_READ | PROT_EXEC);
-    (void)result;
+    if (result != 0) {
+        printf("Code patch mprotect RX failed target=%p page=%p size=%zu errno=%d (%s)\n",
+            target_func, (void*)page_start, page_end - page_start, errno, strerror(errno));
+        return false;
+    }
+    return true;
 }
 #endif
 
@@ -612,7 +632,7 @@ recomp::mods::GenericFunction recomp::mods::LiveRecompilerCodeHandle::get_functi
     return GenericFunction{ recompiler_output->functions[func_index] };
 }
 
-void patch_func(recomp_func_t* target_func, recomp::mods::GenericFunction replacement_func) {
+bool patch_func(recomp_func_t* target_func, recomp::mods::GenericFunction replacement_func) {
     uint8_t* target_func_u8 = reinterpret_cast<uint8_t*>(target_func);
     size_t offset = 0;
 
@@ -622,7 +642,9 @@ void patch_func(recomp_func_t* target_func, recomp::mods::GenericFunction replac
     };
 
     uint64_t old_flags;
-    unprotect(target_func_u8, &old_flags);
+    if (!unprotect(target_func_u8, &old_flags)) {
+        return false;
+    }
 
 #if defined(IS_X86_64)
     static const uint8_t movabs_rax[] = {0x48, 0xB8};
@@ -635,10 +657,15 @@ void patch_func(recomp_func_t* target_func, recomp::mods::GenericFunction replac
         }
     }, replacement_func);
 #elif defined(IS_ARM64)
-    static const uint8_t ldr_x2_8__br_x2[] = {0x42, 0x00, 0x00, 0x58, 0x40, 0x00, 0x1F, 0xD6};
+    static const uint8_t bti_c__ldr_x2_12__br_x2__nop[] = {
+        0x5F, 0x24, 0x03, 0xD5,
+        0x62, 0x00, 0x00, 0x58,
+        0x40, 0x00, 0x1F, 0xD6,
+        0x1F, 0x20, 0x03, 0xD5
+    };
     std::visit(overloaded {
         [&write_bytes](recomp_func_t* native_func) {
-           write_bytes(ldr_x2_8__br_x2, sizeof(ldr_x2_8__br_x2));
+           write_bytes(bti_c__ldr_x2_12__br_x2__nop, sizeof(bti_c__ldr_x2_12__br_x2__nop));
            write_bytes(&native_func, sizeof(&native_func));
         }
     }, replacement_func);
@@ -646,14 +673,19 @@ void patch_func(recomp_func_t* target_func, recomp::mods::GenericFunction replac
 #   error "Unsupported architecture"
 #endif
 
-    protect(target_func_u8, old_flags);
+    flush_code_cache(target_func_u8, PatchSize);
+    return protect(target_func_u8, old_flags);
 }
 
-void unpatch_func(void* target_func, const recomp::mods::PatchData& data) {
+bool unpatch_func(void* target_func, const recomp::mods::PatchData& data) {
     uint64_t old_flags;
-    unprotect(target_func, &old_flags);
+    if (!unprotect(target_func, &old_flags)) {
+        return false;
+    }
     memcpy(target_func, data.replaced_bytes.data(), data.replaced_bytes.size());
-    protect(target_func, old_flags);
+    uint8_t* target_func_u8 = reinterpret_cast<uint8_t*>(target_func);
+    flush_code_cache(target_func_u8, data.replaced_bytes.size());
+    return protect(target_func, old_flags);
 }
 
 void recomp::mods::ModContext::add_opened_mod(ModManifest&& manifest, ConfigStorage&& config_storage, std::vector<size_t>&& game_indices, std::vector<ModContentTypeId>&& detected_content_types, std::vector<char>&& thumbnail) {
@@ -2688,7 +2720,14 @@ recomp::mods::CodeModLoadError recomp::mods::ModContext::resolve_code_dependenci
         cur_replacement_data.mod_id = mod.manifest.mod_id;
 
         // Patch the function to redirect it to the replacement.
-        patch_func(to_replace, mod.code_handle->get_function_handle(replacement.func_index));
+        if (!patch_func(to_replace, mod.code_handle->get_function_handle(replacement.func_index))) {
+            std::stringstream error_param_stream{};
+            error_param_stream << std::hex <<
+                "failed to patch section: 0x" << replacement.original_section_vrom <<
+                " func: 0x" << std::setfill('0') << std::setw(8) << replacement.original_vram;
+            error_param = error_param_stream.str();
+            return CodeModLoadError::InternalError;
+        }
     }
 
     return CodeModLoadError::Good;
@@ -2696,7 +2735,9 @@ recomp::mods::CodeModLoadError recomp::mods::ModContext::resolve_code_dependenci
 
 void recomp::mods::ModContext::unload_mods() {
     for (auto& [replacement_func, replacement_data] : patched_funcs) {
-        unpatch_func(reinterpret_cast<void*>(replacement_func), replacement_data);
+        if (!unpatch_func(reinterpret_cast<void*>(replacement_func), replacement_data)) {
+            printf("Failed to restore patched function for mod %s\n", replacement_data.mod_id.c_str());
+        }
     }
     patched_funcs.clear();
     loaded_mods_by_id.clear();
