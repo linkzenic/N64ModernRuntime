@@ -217,8 +217,8 @@ static void _thread_func(RDRAM_ARG PTR(OSThread) self_, PTR(thread_func_t) entry
 
     // Make sure the thread wasn't replaced or destroyed before it was started.
     if (self->context == thread_context) {
-        printf("[ThreadDiag] run begin id=%d entry=%" PRIx32 " sp=%" PRIx32 " arg=%" PRIx32 "\n", self->id, entrypoint,
-               self->sp, arg);
+        printf("[ThreadDiag] run begin id=%d entry=%" PRIx32 " sp=%" PRIx32 " arg=%" PRIx32 "\n",
+               self->id, entrypoint, self->sp, arg);
         debug_printf("[Thread] Thread started: %d\n", self->id);
         try {
             // Run the thread's function with the provided argument.

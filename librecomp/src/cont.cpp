@@ -2,6 +2,12 @@
 
 #include "helpers.hpp"
 
+#include <cstdio>
+
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
+
 #define MAXCONTROLLERS 4
 
 extern "C" void recomp_set_current_frame_poll_id(uint8_t* rdram, recomp_context* ctx) {
@@ -9,6 +15,21 @@ extern "C" void recomp_set_current_frame_poll_id(uint8_t* rdram, recomp_context*
 }
 
 extern "C" void recomp_measure_latency(uint8_t* rdram, recomp_context* ctx) {
+    s32 stage = _arg<0, s32>(rdram, ctx);
+    if (stage > 0 && stage < 100) {
+        u32 a = _arg<1, u32>(rdram, ctx);
+        u32 b = _arg<2, u32>(rdram, ctx);
+        u32 c = _arg<3, u32>(rdram, ctx);
+        u32 d = _arg<4, u32>(rdram, ctx);
+        std::printf("[GraphNative] stage=%d a=%08X b=%08X c=%08X d=%08X\n", stage, a, b, c, d);
+        std::fflush(stdout);
+#if defined(__ANDROID__)
+        __android_log_print(ANDROID_LOG_INFO, "ZeldaNative",
+                            "[GraphNative] stage=%d a=%08X b=%08X c=%08X d=%08X", stage, a, b, c, d);
+#endif
+        return;
+    }
+
     ultramodern::measure_input_latency();
 }
 

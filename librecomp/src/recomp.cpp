@@ -481,6 +481,29 @@ void run_thread_function(uint8_t* rdram, uint64_t addr, uint64_t sp, uint64_t ar
         game_entry.thread_create_callback(rdram, &ctx);
     }
 
+#if defined(__ANDROID__)
+    const uint32_t entry_addr = static_cast<uint32_t>(addr);
+    printf("[ThreadDiag] run_thread addr raw=%" PRIx64 " low=%08" PRIx32 "\n", addr, entry_addr);
+    if (entry_addr == 0x801748A0u) {
+        if (recomp_func_t* patched_graph_entry = recomp::overlays::get_base_export("recomp_android_graph_thread_entry")) {
+            printf("[ThreadDiag] Android GRAPH using exported patch for %08" PRIx32 "\n", entry_addr);
+            RECOMP_ANDROID_LOG("[ThreadDiag] Android GRAPH using exported patch for 0x%08" PRIX32, entry_addr);
+            patched_graph_entry(rdram, &ctx);
+            return;
+        }
+
+        if (recomp_func_t* patched_graph_entry = recomp::overlays::get_patch_func_by_ram_addr(0x80834E14u)) {
+            printf("[ThreadDiag] Android GRAPH using patch vram 80834e14 for %08" PRIx32 "\n", entry_addr);
+            RECOMP_ANDROID_LOG("[ThreadDiag] Android GRAPH using patch vram 0x80834E14 for 0x%08" PRIX32, entry_addr);
+            patched_graph_entry(rdram, &ctx);
+            return;
+        }
+
+        printf("[ThreadDiag] Android GRAPH patch missing; falling back to %08" PRIx32 "\n", entry_addr);
+        RECOMP_ANDROID_LOG("[ThreadDiag] Android GRAPH patch missing; falling back to 0x%08" PRIX32, entry_addr);
+    }
+#endif
+
     recomp_func_t* func = get_function(addr);
     func(rdram, &ctx);
 }

@@ -55,6 +55,7 @@ namespace recomp {
         uint32_t get_patch_section_ram_addr(uint16_t patch_code_section_index);
         uint32_t get_patch_section_rom_addr(uint16_t patch_code_section_index);
         const FuncEntry* get_patch_function_entry(uint16_t patch_code_section_index, size_t function_index);
+        recomp_func_t* get_patch_func_by_ram_addr(uint32_t ram_addr);
         bool get_patch_func_entry_by_section_index_function_offset(uint16_t code_section_index, uint32_t function_offset, FuncEntry& func_out);
         std::span<const RelocEntry> get_patch_section_relocs(uint16_t patch_code_section_index);
         std::span<const uint8_t> get_patch_binary();

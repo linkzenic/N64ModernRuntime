@@ -431,6 +431,29 @@ const FuncEntry* recomp::overlays::get_patch_function_entry(uint16_t patch_code_
     return nullptr;
 }
 
+recomp_func_t* recomp::overlays::get_patch_func_by_ram_addr(uint32_t ram_addr) {
+    if (patch_code_sections == nullptr) {
+        return nullptr;
+    }
+
+    for (size_t patch_section_index = 0; patch_section_index < num_patch_code_sections; patch_section_index++) {
+        const SectionTableEntry& section = patch_code_sections[patch_section_index];
+        if (ram_addr < section.ram_addr || ram_addr >= section.ram_addr + section.size) {
+            continue;
+        }
+
+        const uint32_t function_offset = ram_addr - section.ram_addr;
+        for (size_t func_index = 0; func_index < section.num_funcs; func_index++) {
+            const FuncEntry& func = section.funcs[func_index];
+            if (func.offset == function_offset) {
+                return func.func;
+            }
+        }
+    }
+
+    return nullptr;
+}
+
 // Finds a base patched function given a patch section's index and the function's offset into the section.
 bool recomp::overlays::get_patch_func_entry_by_section_index_function_offset(uint16_t patch_code_section_index, uint32_t function_offset, FuncEntry& func_out) {
     if (patch_code_section_index >= num_patch_code_sections) {
