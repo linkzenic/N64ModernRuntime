@@ -8,6 +8,14 @@
 #include <mutex>
 #include <queue>
 #include <cstring>
+#include <cstdlib>
+
+#if defined(__ANDROID__)
+#include <android/log.h>
+#define ZELDA_ANDROID_EVENTS_LOG(...) __android_log_print(ANDROID_LOG_INFO, "ZeldaEvents", __VA_ARGS__)
+#else
+#define ZELDA_ANDROID_EVENTS_LOG(...)
+#endif
 
 #include "blockingconcurrentqueue.h"
 
@@ -319,8 +327,37 @@ void ultramodern::trigger_config_action() {
 std::atomic<ultramodern::renderer::SetupResult> renderer_setup_result = ultramodern::renderer::SetupResult::Success;
 std::atomic<ultramodern::renderer::GraphicsApi> renderer_chosen_api = ultramodern::renderer::GraphicsApi::Auto;
 
+#if defined(__ANDROID__)
+static bool android_rt64_setup_probe_enabled() {
+    const char* value = std::getenv("APP_RT64_SETUP_PROBE");
+    return value != nullptr && std::strcmp(value, "1") == 0;
+}
+
+static bool android_rt64_post_init_probe_enabled() {
+    const char* value = std::getenv("APP_RT64_POST_INIT_PROBE");
+    return value != nullptr && std::strcmp(value, "1") == 0;
+}
+
+static bool android_rt64_first_update_probe_enabled() {
+    const char* value = std::getenv("APP_RT64_FIRST_UPDATE_PROBE");
+    return value != nullptr && std::strcmp(value, "1") == 0;
+}
+
+static bool android_rt64_first_dl_probe_enabled() {
+    const char* value = std::getenv("APP_RT64_FIRST_DL_PROBE");
+    return value != nullptr && std::strcmp(value, "1") == 0;
+}
+
+static int android_rt64_dl_probe_stage() {
+    const char* value = std::getenv("APP_RT64_DL_PROBE_STAGE");
+    return value != nullptr ? std::atoi(value) : 0;
+}
+#endif
+
 void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_ready, ultramodern::renderer::WindowHandle window_handle) {
     bool enabled_instant_present = false;
+    bool android_first_update_probe_done = false;
+    bool android_first_dl_probe_done = false;
     using namespace std::chrono_literals;
 
     ultramodern::set_native_thread_name("Gfx Thread");
@@ -338,11 +375,33 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
         return;
     }
 
+#if defined(__ANDROID__)
+    if (android_rt64_setup_probe_enabled()) {
+        ZELDA_ANDROID_EVENTS_LOG("RT64 setup probe reached valid renderer context; holding before callbacks/RSP/display lists");
+        thread_ready->signal();
+        while (!exited) {
+            std::this_thread::sleep_for(250ms);
+        }
+        return;
+    }
+#endif
+
     if (events_callbacks.gfx_init_callback != nullptr) {
         events_callbacks.gfx_init_callback();
     }
 
     ultramodern::rsp::init();
+
+#if defined(__ANDROID__)
+    if (android_rt64_post_init_probe_enabled()) {
+        ZELDA_ANDROID_EVENTS_LOG("RT64 post-init probe reached after callbacks/RSP init; holding before render queue processing");
+        thread_ready->signal();
+        while (!exited) {
+            std::this_thread::sleep_for(250ms);
+        }
+        return;
+    }
+#endif
 
     // Notify the caller thread that this thread is ready.
     thread_ready->signal();
@@ -354,6 +413,17 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
         if (events_context.action_queue.wait_dequeue_timed(action, action_wait_timeout)) {
             // Determine the action type and act on it
             if (const auto* task_action = std::get_if<SpTaskAction>(&action)) {
+#if defined(__ANDROID__)
+                const int dl_probe_stage = android_rt64_dl_probe_stage();
+                if (dl_probe_stage == 1 && !android_first_dl_probe_done) {
+                    android_first_dl_probe_done = true;
+                    ZELDA_ANDROID_EVENTS_LOG("RT64 display-list stage 1 probe received first task; holding before task processing");
+                    while (!exited) {
+                        std::this_thread::sleep_for(250ms);
+                    }
+                    return;
+                }
+#endif
                 // Turn on instant present if the game has been started and it hasn't been turned on yet.
                 if (ultramodern::is_game_started() && !enabled_instant_present) {
                     renderer_context->enable_instant_present();
@@ -373,6 +443,17 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
                 renderer_context->send_dl(&task_action->task);
                 [[maybe_unused]] auto renderer_end = std::chrono::high_resolution_clock::now();
 
+#if defined(__ANDROID__)
+                if (android_rt64_first_dl_probe_enabled() && !android_first_dl_probe_done) {
+                    android_first_dl_probe_done = true;
+                    ZELDA_ANDROID_EVENTS_LOG("RT64 first-display-list probe completed one send_dl; holding before dp_complete");
+                    while (!exited) {
+                        std::this_thread::sleep_for(250ms);
+                    }
+                    return;
+                }
+#endif
+
                 dp_complete();
                 // TODO hook the parsed event up to the actual parsing point when a callback is added to RT64.
                 ultramodern::extensions::on_displaylist_parsed(displaylist);
@@ -384,6 +465,16 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
                 renderer_context->update_screen();
                 display_refresh_rate = renderer_context->get_display_framerate();
                 resolution_scale = renderer_context->get_resolution_scale();
+#if defined(__ANDROID__)
+                if (android_rt64_first_update_probe_enabled() && !android_first_update_probe_done) {
+                    android_first_update_probe_done = true;
+                    ZELDA_ANDROID_EVENTS_LOG("RT64 first-update probe completed one update_screen; holding before display lists");
+                    while (!exited) {
+                        std::this_thread::sleep_for(250ms);
+                    }
+                    return;
+                }
+#endif
             }
             else if (const auto* config_action = std::get_if<UpdateConfigAction>(&action)) {
                 (void)config_action;
@@ -443,6 +534,7 @@ static const OSViMode dummy_mode = []() {
 void set_dummy_vi(bool odd) {
     ViState* next_state = events_context.vi.get_next_state();
     next_state->mode = &dummy_mode;
+    next_state->control = dummy_mode.comRegs.ctrl;
     // Set up a dummy framebuffer.
     next_state->framebuffer = 0x80700000;
     if (odd) {
@@ -554,10 +646,28 @@ extern "C" PTR(void) osViGetCurrentFramebuffer() {
 }
 
 void ultramodern::submit_rsp_task(RDRAM_ARG PTR(OSTask) task_) {
+#if defined(__ANDROID__)
+    if (android_rt64_dl_probe_stage() == 9) {
+        ZELDA_ANDROID_EVENTS_LOG("RT64 display-list stage 9 probe reached submit_rsp_task before task pointer translation; holding task_=0x%08X", static_cast<uint32_t>(task_));
+        while (!exited) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
+        return;
+    }
+#endif
     OSTask* task = TO_PTR(OSTask, task_);
 
     // Send gfx tasks to the graphics action queue
     if (task->t.type == M_GFXTASK) {
+#if defined(__ANDROID__)
+        if (android_rt64_dl_probe_stage() == 10) {
+            ZELDA_ANDROID_EVENTS_LOG("RT64 display-list stage 10 probe reached submit_rsp_task before enqueue; holding");
+            while (!exited) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            }
+            return;
+        }
+#endif
         events_context.action_queue.enqueue(SpTaskAction{ *task });
     }
     // Set all other tasks as the RSP task

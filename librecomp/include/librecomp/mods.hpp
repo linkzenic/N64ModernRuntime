@@ -357,6 +357,7 @@ namespace recomp {
 
             void register_game(const std::string& mod_game_id);
             void register_embedded_mod(const std::string& mod_id, std::span<const uint8_t> mod_bytes);
+            void ignore_external_mod(const std::string& mod_id);
             std::vector<ModOpenErrorDetails> scan_mod_folder(const std::filesystem::path& mod_folder);
             void close_mods();
             void load_mods_config();
@@ -423,6 +424,7 @@ namespace recomp {
             std::vector<size_t> mod_order_lookup; // mod index -> order index
             std::mutex opened_mods_mutex;
             std::unordered_set<std::string> mod_ids;
+            std::unordered_set<std::string> ignored_external_mods;
             std::unordered_set<std::string> enabled_mods;
             std::unordered_set<std::string> auto_enabled_mods;
             std::unordered_map<recomp_func_t*, PatchData> patched_funcs;
@@ -628,6 +630,7 @@ namespace recomp {
 
         void initialize_mods();
         void register_embedded_mod(const std::string &mod_id, std::span<const uint8_t> mod_bytes);
+        void ignore_external_mod(const std::string& mod_id);
         void scan_mods();
         void close_mods();
         std::filesystem::path get_mods_directory();

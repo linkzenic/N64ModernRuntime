@@ -102,6 +102,11 @@ void recomp::mods::register_embedded_mod(const std::string &mod_id, std::span<co
     mod_context->register_embedded_mod(mod_id, mod_bytes);
 }
 
+void recomp::mods::ignore_external_mod(const std::string& mod_id) {
+    std::lock_guard<std::mutex> lock(mod_context_mutex);
+    mod_context->ignore_external_mod(mod_id);
+}
+
 void recomp::mods::scan_mods() {
     std::vector<recomp::mods::ModOpenErrorDetails> mod_open_errors;
     {
@@ -552,19 +557,52 @@ std::string recomp::current_mod_game_id() {
     return game_entry.mod_game_id;
 }
 
+std::atomic_bool exited = false;
+moodycamel::LightweightSemaphore graphics_shutdown_ready;
+
+#if defined(__ANDROID__)
+static int android_game_start_probe_stage() {
+    const char* value = std::getenv("APP_RT64_DL_PROBE_STAGE");
+    return value != nullptr ? std::atoi(value) : 0;
+}
+
+static void android_hold_game_start_probe(int stage, const char* label) {
+    if (android_game_start_probe_stage() != stage) {
+        return;
+    }
+
+    RECOMP_ANDROID_LOG("game-start probe stage %d reached: %s; holding", stage, label);
+    while (!exited) {
+        ultramodern::sleep_milliseconds(250);
+    }
+}
+#endif
+
 void recomp::start_game(const std::u8string& game_id) {
+#if defined(__ANDROID__)
+    android_hold_game_start_probe(19, "start_game entered");
+#endif
     std::lock_guard<std::mutex> lock(current_game_mutex);
+#if defined(__ANDROID__)
+    android_hold_game_start_probe(191, "start_game acquired current_game lock");
+#endif
     current_game = game_id;
+#if defined(__ANDROID__)
+    android_hold_game_start_probe(192, "start_game assigned current_game");
+#endif
     game_status.store(GameStatus::Running);
+#if defined(__ANDROID__)
+    android_hold_game_start_probe(193, "start_game stored Running");
+#endif
     game_status.notify_all();
+#if defined(__ANDROID__)
+    android_hold_game_start_probe(194, "start_game notified game thread");
+#endif
 }
 
 bool ultramodern::is_game_started() {
     return game_status.load() != GameStatus::None;
 }
-
-std::atomic_bool exited = false;
-moodycamel::LightweightSemaphore graphics_shutdown_ready;
 
 void ultramodern::quit() {
     exited.store(true);
@@ -667,22 +705,45 @@ void recomp::mods::set_mod_index(const std::string &mod_game_id, const std::stri
 
 bool wait_for_game_started(uint8_t* rdram, recomp_context* context) {
     game_status.wait(GameStatus::None);
+#if defined(__ANDROID__)
+    android_hold_game_start_probe(195, "wait_for_game_started woke before status load");
+#endif
 
-    switch (game_status.load()) {
+    GameStatus current_status = game_status.load();
+#if defined(__ANDROID__)
+    android_hold_game_start_probe(196, "wait_for_game_started loaded status before switch");
+    if (current_status == GameStatus::Running) {
+        android_hold_game_start_probe(197, "wait_for_game_started confirmed Running before switch");
+    }
+#endif
+
+    switch (current_status) {
         // TODO refactor this to allow a project to specify what entrypoint function to run for a give game.
         case GameStatus::Running:
             {
+#if defined(__ANDROID__)
+                android_hold_game_start_probe(20, "before load_stored_rom");
+#endif
                 if (!recomp::load_stored_rom(current_game.value())) {
                     ultramodern::error_handling::message_box("Error opening stored ROM! Please restart this program.");
                 }
+#if defined(__ANDROID__)
+                android_hold_game_start_probe(21, "after load_stored_rom");
+#endif
 
                 auto find_it = game_roms.find(current_game.value());
                 const recomp::GameEntry& game_entry = find_it->second;
 
                 init(rdram, context, game_entry.entrypoint_address);
+#if defined(__ANDROID__)
+                android_hold_game_start_probe(22, "after init");
+#endif
                 if (game_entry.on_init_callback) {
                     game_entry.on_init_callback(rdram, context);
                 }
+#if defined(__ANDROID__)
+                android_hold_game_start_probe(23, "after on_init_callback");
+#endif
 
                 uint32_t mod_ram_used = 0;
                 if (!game_entry.mod_game_id.empty()) {
@@ -714,17 +775,29 @@ bool wait_for_game_started(uint8_t* rdram, recomp_context* context) {
                         return false;
                     }
                 }
+#if defined(__ANDROID__)
+                android_hold_game_start_probe(24, "after mod loading");
+#endif
 
                 recomp::init_heap(rdram, recomp::mod_rdram_start + mod_ram_used);
                 printf("[Recomp] Heap initialized, mod RAM used 0x%08X\n", mod_ram_used);
+#if defined(__ANDROID__)
+                android_hold_game_start_probe(25, "after init_heap");
+#endif
 
                 save_type = game_entry.save_type;
                 printf("[Recomp] Initializing saving\n");
                 ultramodern::init_saving(rdram);
                 printf("[Recomp] Saving initialized\n");
+#if defined(__ANDROID__)
+                android_hold_game_start_probe(26, "after init_saving");
+#endif
 
                 try {
                     printf("[Recomp] Entering game entrypoint\n");
+#if defined(__ANDROID__)
+                    android_hold_game_start_probe(27, "before game entrypoint");
+#endif
                     game_entry.entrypoint(rdram, context);
                     printf("[Recomp] Game entrypoint returned\n");
                 } catch (ultramodern::thread_terminated& terminated) {

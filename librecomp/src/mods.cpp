@@ -3,6 +3,7 @@
 #include <sstream>
 #include <functional>
 #include <cerrno>
+#include <cctype>
 #include <cstring>
 
 #include "librecomp/files.hpp"
@@ -185,6 +186,7 @@ bool protect(void* target_func, uint64_t old_flags) {
 #    include <cstdlib>
 #    include <system_error>
 #    include <sys/stat.h>
+#    include <sys/system_properties.h>
 #  endif
 
 #  if defined(__ANDROID__)
@@ -216,11 +218,14 @@ static std::filesystem::path prepare_android_native_library_path(const std::file
     return destination_path;
 }
 
-static bool android_safe_mode_enabled() {
-    const char* safe_mode = std::getenv("APP_SAFE_MODE");
-    return safe_mode != nullptr && safe_mode[0] == '1';
-}
 #  endif
+
+static bool app_n64_mode_enabled() {
+    const char* safe_mode = std::getenv("APP_SAFE_MODE");
+    const char* n64_mode = std::getenv("APP_N64_MODE");
+    return (safe_mode != nullptr && safe_mode[0] == '1') ||
+        (n64_mode != nullptr && n64_mode[0] == '1');
+}
 
 class recomp::mods::DynamicLibrary {
 public:
@@ -674,7 +679,11 @@ bool patch_func(recomp_func_t* target_func, recomp::mods::GenericFunction replac
 #endif
 
     flush_code_cache(target_func_u8, PatchSize);
-    return protect(target_func_u8, old_flags);
+    if (!protect(target_func_u8, old_flags)) {
+        printf("Code patch protect failed after writing target=%p\n", reinterpret_cast<void*>(target_func));
+        return false;
+    }
+    return true;
 }
 
 bool unpatch_func(void* target_func, const recomp::mods::PatchData& data) {
@@ -689,6 +698,11 @@ bool unpatch_func(void* target_func, const recomp::mods::PatchData& data) {
 }
 
 void recomp::mods::ModContext::add_opened_mod(ModManifest&& manifest, ConfigStorage&& config_storage, std::vector<size_t>&& game_indices, std::vector<ModContentTypeId>&& detected_content_types, std::vector<char>&& thumbnail) {
+    if (!manifest.mod_root_path.empty() && ignored_external_mods.contains(manifest.mod_id)) {
+        printf("Ignoring external mod %s from " PATHFMT "\n", manifest.mod_id.c_str(), manifest.mod_root_path.c_str());
+        return;
+    }
+
     std::unique_lock lock(opened_mods_mutex);
     size_t mod_index = opened_mods.size();
     opened_mods_by_id.emplace(manifest.mod_id, mod_index);
@@ -723,6 +737,10 @@ void recomp::mods::ModContext::register_game(const std::string& mod_game_id) {
 
 void recomp::mods::ModContext::register_embedded_mod(const std::string &mod_id, std::span<const uint8_t> mod_bytes) {
     embedded_mod_bytes.emplace(mod_id, mod_bytes);
+}
+
+void recomp::mods::ModContext::ignore_external_mod(const std::string& mod_id) {
+    ignored_external_mods.emplace(mod_id);
 }
 
 void recomp::mods::ModContext::close_mods() {
@@ -902,13 +920,6 @@ std::vector<recomp::mods::ModOpenErrorDetails> recomp::mods::ModContext::scan_mo
     close_mods();
 
     static const std::vector<ModContentTypeId> empty_content_types{};
-#if defined(__ANDROID__)
-    if (android_safe_mode_enabled()) {
-        printf("Android safe mode: skipping external mods\n");
-    }
-    else
-#endif
-    {
     for (const auto& mod_path : std::filesystem::directory_iterator{mod_folder, std::filesystem::directory_options::skip_permission_denied, ec}) {
         bool is_mod = false;
         bool requires_manifest = true;
@@ -936,7 +947,6 @@ std::vector<recomp::mods::ModOpenErrorDetails> recomp::mods::ModContext::scan_mo
         else {
             printf("Skipping non-mod " PATHFMT PATHFMT "\n", mod_path.path().stem().c_str(), mod_path.path().extension().c_str());
         }
-    }
     }
 
     for (const auto &mod_bytes : embedded_mod_bytes) {
@@ -1699,11 +1709,9 @@ std::vector<recomp::mods::ModLoadErrorDetails> recomp::mods::ModContext::load_mo
     // Find and load active mods.
     for (size_t mod_index = 0; mod_index < opened_mods.size(); mod_index++) {
         auto& mod = opened_mods[mod_index];
-#if defined(__ANDROID__)
-        if (android_safe_mode_enabled() && !embedded_mod_bytes.contains(mod.manifest.mod_id)) {
+        if (app_n64_mode_enabled() && !embedded_mod_bytes.contains(mod.manifest.mod_id)) {
             continue;
         }
-#endif
         if (mod.is_for_game(mod_game_index) && (enabled_mods.contains(mod.manifest.mod_id) || auto_enabled_mods.contains(mod.manifest.mod_id))) {
             active_mods.push_back(mod_index);
             loaded_mods_by_id.emplace(mod.manifest.mod_id, mod_index);
@@ -2146,7 +2154,9 @@ std::unique_ptr<recomp::mods::LiveRecompilerCodeHandle> apply_regenlist(Regenera
 
     // Patch the functions that were regenerated.
     for (size_t patched_func_index = 0; patched_func_index < regenlist.func_ptrs.size(); patched_func_index++) {
-        patch_func(regenlist.func_ptrs[patched_func_index], regenerated_code_handle->get_function_handle(patched_func_index));
+        if (!patch_func(regenlist.func_ptrs[patched_func_index], regenerated_code_handle->get_function_handle(patched_func_index))) {
+            return {};
+        }
     }
 
     return regenerated_code_handle;
