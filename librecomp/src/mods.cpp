@@ -4,7 +4,9 @@
 #include <functional>
 #include <cerrno>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
+#include <algorithm>
 
 #include "librecomp/files.hpp"
 #include "librecomp/mods.hpp"
@@ -26,6 +28,37 @@ static bool read_json(std::ifstream input_file, nlohmann::json &json_out) {
         return false;
     }
     return true;
+}
+
+static bool android_compatibility_build_enabled() {
+    const char* compatibility_build = std::getenv("APP_ANDROID_COMPATIBILITY_BUILD");
+    return compatibility_build != nullptr && compatibility_build[0] == '1';
+}
+
+static bool android_compatibility_builtin_code_mod(const std::string& mod_id) {
+    if (!android_compatibility_build_enabled()) {
+        return false;
+    }
+    return mod_id == "yazmt_mm_corelib" ||
+           mod_id == "yazmt_mm_global_objects" ||
+           mod_id == "mm_recomp_interface_helper" ||
+           mod_id == "MM_EZ_Text_Replacer_API" ||
+           mod_id == "mm_modern_controller_overhaul" ||
+           mod_id == "yazmt_mm_playermodelmanager" ||
+           mod_id == "yazmt_mm_playermodelmanager_fsmodels" ||
+           mod_id == "ProxyMM_Cheats" ||
+           mod_id == "FdAnywhere" ||
+           mod_id == "fast_mask" ||
+           mod_id == "owls_never_quit" ||
+           mod_id == "mm_recomp_bomb_arrows";
+}
+
+static bool android_compatibility_mod_can_load_from_storage(const std::string& mod_id) {
+    if (!android_compatibility_build_enabled()) {
+        return true;
+    }
+
+    return android_compatibility_builtin_code_mod(mod_id);
 }
 
 static bool read_json_with_backups(const std::filesystem::path &path, nlohmann::json &json_out) {
@@ -221,10 +254,16 @@ static std::filesystem::path prepare_android_native_library_path(const std::file
 #  endif
 
 static bool app_n64_mode_enabled() {
-    const char* safe_mode = std::getenv("APP_SAFE_MODE");
     const char* n64_mode = std::getenv("APP_N64_MODE");
-    return (safe_mode != nullptr && safe_mode[0] == '1') ||
-        (n64_mode != nullptr && n64_mode[0] == '1');
+    return n64_mode != nullptr && n64_mode[0] == '1';
+}
+
+static bool app_code_mods_disabled() {
+    const char* skip_code_mods = std::getenv("APP_ANDROID_SKIP_CODE_MODS");
+    const char* safe_mode = std::getenv("APP_SAFE_MODE");
+    return (skip_code_mods != nullptr && skip_code_mods[0] == '1') ||
+        (safe_mode != nullptr && safe_mode[0] == '1') ||
+        app_n64_mode_enabled();
 }
 
 class recomp::mods::DynamicLibrary {
@@ -1709,10 +1748,27 @@ std::vector<recomp::mods::ModLoadErrorDetails> recomp::mods::ModContext::load_mo
     // Find and load active mods.
     for (size_t mod_index = 0; mod_index < opened_mods.size(); mod_index++) {
         auto& mod = opened_mods[mod_index];
-        if (app_n64_mode_enabled() && !embedded_mod_bytes.contains(mod.manifest.mod_id)) {
+        if (app_code_mods_disabled() && !embedded_mod_bytes.contains(mod.manifest.mod_id)) {
             continue;
         }
         if (mod.is_for_game(mod_game_index) && (enabled_mods.contains(mod.manifest.mod_id) || auto_enabled_mods.contains(mod.manifest.mod_id))) {
+            const bool is_external_mod = !mod.manifest.mod_root_path.empty() && !embedded_mod_bytes.contains(mod.manifest.mod_id);
+            if (is_external_mod && !android_compatibility_mod_can_load_from_storage(mod.manifest.mod_id)) {
+                printf("Skipping external mod %s for Android compatibility build\n", mod.manifest.mod_id.c_str());
+                continue;
+            }
+
+            if (android_compatibility_builtin_code_mod(mod.manifest.mod_id)) {
+                loaded_mods_by_id.emplace(mod.manifest.mod_id, mod_index);
+                printf("Skipping baked compatibility mod code %s\n", mod.manifest.mod_id.c_str());
+                continue;
+            }
+            const bool has_code_content = std::find(mod.content_types.begin(), mod.content_types.end(), code_content_type_id) != mod.content_types.end();
+            if (android_compatibility_build_enabled() && is_external_mod && has_code_content) {
+                printf("Skipping external code mod %s for Android compatibility build\n", mod.manifest.mod_id.c_str());
+                continue;
+            }
+
             active_mods.push_back(mod_index);
             loaded_mods_by_id.emplace(mod.manifest.mod_id, mod_index);
 
