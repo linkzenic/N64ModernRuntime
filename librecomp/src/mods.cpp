@@ -4,6 +4,7 @@
 #include <functional>
 #include <cerrno>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 
 #include "librecomp/files.hpp"
@@ -100,6 +101,13 @@ template<class... Ts>
 struct overloaded : Ts... { using Ts::operator()...; };
 template<class... Ts>
 overloaded(Ts...) -> overloaded<Ts...>;
+
+static bool app_n64_mode_enabled() {
+    const char* safe_mode = std::getenv("APP_SAFE_MODE");
+    const char* n64_mode = std::getenv("APP_N64_MODE");
+    return (safe_mode != nullptr && safe_mode[0] == '1') ||
+        (n64_mode != nullptr && n64_mode[0] == '1');
+}
 
 #if defined(_WIN32)
 #   define WIN32_LEAN_AND_MEAN
@@ -219,13 +227,6 @@ static std::filesystem::path prepare_android_native_library_path(const std::file
 }
 
 #  endif
-
-static bool app_n64_mode_enabled() {
-    const char* safe_mode = std::getenv("APP_SAFE_MODE");
-    const char* n64_mode = std::getenv("APP_N64_MODE");
-    return (safe_mode != nullptr && safe_mode[0] == '1') ||
-        (n64_mode != nullptr && n64_mode[0] == '1');
-}
 
 class recomp::mods::DynamicLibrary {
 public:
